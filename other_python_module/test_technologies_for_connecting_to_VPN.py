@@ -1,53 +1,80 @@
 import subprocess
-import configparser
+import logging
+import sys
+import os
+from time import sleep
+#from stop import stop_vpn_processes
 
-def check_vpn_connection_exists(vpn_name):
+
+def start_vpn(config_path, log_file='vpn_output.log'):
+    """
+    Запускает OpenVPN с указанным конфигурационным файлом и записывает вывод в лог-файл.
+
+    :param config_path: Путь к конфигурационному файлу OpenVPN.
+    :param log_file: Путь к файлу для записи логов.
+    :return: Объект процесса.
+    """
+    logging.basicConfig(filename=log_file, level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+    # Путь к openvpn в контейнере
+    openvpn_path = '/usr/sbin/openvpn'
+
+    # Проверка, существует ли файл
+    if not os.path.isfile(openvpn_path):
+        logging.error(f"OpenVPN executable not found at {openvpn_path}")
+        sys.stderr.write(f"OpenVPN executable not found at {openvpn_path}\n")
+        return None
+
+    command = [openvpn_path, '--config', config_path]
+
     try:
-        check_command = f'PowerShell -Command "Get-VpnConnection -Name \'{vpn_name}\'"'
-        result = subprocess.run(check_command, shell=True, capture_output=True, text=True)
-        return result.returncode == 0
-    except subprocess.CalledProcessError as e:
-        return False
-
-def remove_vpn_connection(vpn_name):
-    try:
-        remove_command = f'PowerShell -Command "Remove-VpnConnection -Name \'{vpn_name}\' -Force"'
-        subprocess.run(remove_command, shell=True, check=True)
-        print(f"VPN подключение {vpn_name} удалено.")
-    except subprocess.CalledProcessError as e:
-        print(f"VPN подключение {vpn_name} не было найдено для удаления.")
-
-def create_vpn_connection(vpn_name, server_address, auth_method, encryption_level, remember_credential, split_tunneling):
-    try:
-        if check_vpn_connection_exists(vpn_name):
-            print(f"VPN подключение {vpn_name} уже существует.")
-            return
-
-        create_vpn_command = (
-            f'PowerShell -Command "Add-VpnConnection -Name \'{vpn_name}\' -ServerAddress \'{server_address}\' '
-            f'-TunnelType L2TP -AuthenticationMethod {auth_method} -EncryptionLevel {encryption_level} '
-            f'-RememberCredential $True -SplitTunneling $({str(split_tunneling).lower()})"'
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
         )
+        return process
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+        sys.stderr.write(f"An error occurred: {e}\n")
+        return None
 
-        subprocess.run(create_vpn_command, shell=True, check=True)
-        print(f"VPN подключение {vpn_name} создано с параметром SplitTunneling={split_tunneling}.")
 
-    except subprocess.CalledProcessError as e:
-        print(f"Ошибка при создании VPN подключения: {e}")
+def vpn_process_manager(config_path, timeout=60):
+    """
+    Менеджер процесса VPN: запускает и затем корректно останавливает VPN.
+
+    :param config_path: Путь к конфигурационному файлу OpenVPN.
+    :param timeout: Время ожидания завершения процесса OpenVPN в секундах.
+    """
+    # Запуск OpenVPN
+    vpn_process = start_vpn(config_path)
+    if vpn_process is None:
+        logging.error("Не удалось запустить OpenVPN.")
+        return
+
+    try:
+        print("Ожидание завершения процесса OpenVPN...")
+        # Ожидание завершения процесса с таймаутом
+        vpn_process.wait(timeout=timeout)
+        print("Процесс OpenVPN завершен.")
+
+    except subprocess.TimeoutExpired:
+        # Если процесс не завершился в течение таймаута, принудительно завершите его
+        print("Время ожидания истекло. Принудительное завершение процесса OpenVPN...")
+        vpn_process.terminate()
+        vpn_process.wait()  # Убедитесь, что процесс завершен
+        print("Процесс OpenVPN принудительно завершен.")
+
+    finally:
+        # После завершения процесса OpenVPN, остановите другие связанные процессы
+        #stop_vpn_processes()
+        pass
+
 
 if __name__ == "__main__":
-    config = configparser.ConfigParser()
-    config.read('vpn_config.ini')
+    config_path = 'vpn_config.ovpn'
 
-    vpn_name = config['VPN']['vpn_name']
-    server_address = config['VPN']['server_address']
-    auth_method = config['VPN'].get('authentication_method', 'PAP')  # Default to PAP if not specified
-    encryption_level = config['VPN'].get('encryption_level', 'Required')
-    remember_credential = config['VPN'].getboolean('remember_credential', True)
-    split_tunneling = config['VPN'].getboolean('split_tunneling', False)
-
-    # Удаляем существующее VPN подключение, если оно есть
-    remove_vpn_connection(vpn_name)
-
-    # Создаем VPN подключение
-    create_vpn_connection(vpn_name, server_address, auth_method, encryption_level, remember_credential, split_tunneling)
+    # Запуск менеджера процесса VPN
+    vpn_process_manager(config_path)
